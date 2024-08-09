@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+pydantic
+google-cloud-bigquery-storage
+pyarrow
+adbc-driver-postgresql
+pyyaml

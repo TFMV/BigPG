@@ -1,0 +1,5 @@
+gcp:
+  project_id: "tfmv-371720"
+
+postgres:
+  conn_str: "postgresql://postgres:password@localhost/tfmv"
