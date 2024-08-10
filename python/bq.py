@@ -58,9 +58,7 @@ def append_rows_pending(project_id: str, dataset_id: str, table_id: str):
     request = types.AppendRowsRequest()
     request.offset = 0
     proto_data = types.AppendRowsRequest.ProtoData()
-    proto_data.rows = types.ProtoRows(
-        serialized_rows=[arrow_batches[0].to_bytes()]
-    )
+    proto_data.rows = types.ProtoRows(serialized_rows=[arrow_batches[0].to_bytes()])
     request.proto_rows = proto_data
 
     response_future_1 = append_rows_stream.send(request)
