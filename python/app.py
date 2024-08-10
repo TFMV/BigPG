@@ -6,12 +6,13 @@ from google.cloud.bigquery_storage import (
     types,
     ArrowSerializationOptions,
 )
+from google.cloud import bigquery
 import pyarrow as pa
+import pyarrow.ipc as ipc
 import time
 import adbc_driver_postgresql.dbapi
 import yaml
 import uvicorn
-import pyarrow.bigquery as bq
 
 class ConfigLoader:
     """Handles loading and accessing the configuration from a YAML file."""
@@ -72,25 +73,28 @@ class PostgresService:
         with self.connection.cursor() as cursor:
             cursor.adbc_ingest(table_name, arrow_table, mode="create_append")
             self.connection.commit()
-        
+
     def fetch_data(self, table_name: str) -> pa.Table:
         with self.connection.cursor() as cursor:
             cursor.execute(f"SELECT * FROM {table_name}")
             return cursor.fetch_arrow_table()
 
 
-def generate_metadata(schema_or_table: Union[pa.Table, pa.Schema]) -> Dict[str, Any]:
-    schema = (
-        schema_or_table.schema
-        if isinstance(schema_or_table, pa.Table)
-        else schema_or_table
-    )
-    return {
-        "fields": [
+def generate_metadata(schema: Union[pa.Schema, list]) -> Dict[str, Any]:
+    """Generates metadata from a pyarrow schema or BigQuery schema."""
+    if isinstance(schema, pa.Schema):
+        # If schema is a PyArrow schema
+        fields = [
             {"name": field.name, "type": str(field.type), "nullable": field.nullable}
             for field in schema
         ]
-    }
+    else:
+        # If schema is a BigQuery schema (list of SchemaField)
+        fields = [
+            {"name": field.name, "type": field.field_type, "nullable": field.is_nullable}
+            for field in schema
+        ]
+    return {"fields": fields}
 
 
 class CopyTableRequest(BaseModel):
@@ -104,7 +108,7 @@ class CopyTableResponse(BaseModel):
     status: str
     time_taken: float
     metadata: Dict[str, Any]
-    rows_loaded: Optional[int] = None  # Added for rows loaded
+    rows_loaded: Optional[int] = None
 
     class Config:
         arbitrary_types_allowed = True
@@ -148,29 +152,47 @@ async def bq_to_pg(request: CopyTableRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/pg2bq/", response_model=CopyTableResponse)
-async def pg_to_bq(request: CopyTableRequest):
+@app.post("/bq2pg_arrow/", response_model=CopyTableResponse)
+async def bq_to_pg_arrow(request: CopyTableRequest):
     start_time = time.time()
 
     try:
+        # Initialize BigQuery client
+        bq_client = bigquery.Client()
+
+        # Run a query
+        query = f"""
+            SELECT *
+            FROM `{request.dataset_id}.{request.table_id}`
+        """
+        
+        # Add predicates if they exist
+        if request.predicates:
+            predicate_string = " AND ".join([f"{k} = '{v}'" for k, v in request.predicates.items()])
+            query += f" WHERE {predicate_string}"
+        
+        query_job = bq_client.query(query)
+
+        # Get the result set, and use to_arrow_iterable to stream Arrow record batches
+        rows = query_job.result()
+
+        # Initialize Postgres service
         postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
 
-        # Fetch arrow table from PostgreSQL
-        arrow_table = postgres_service.fetch_data(request.table_id)
-        
-        # Assuming that the project_id, dataset_id, and table_id are correct
-        bq.write_table(arrow_table, f"{config_loader.get('gcp', 'project_id')}.{request.dataset_id}.{request.table_id}")
+        # Ingest the streamed data into PostgreSQL
+        with postgres_service.connection.cursor() as cursor:
+            cursor.adbc_ingest(request.table_id, rows.to_arrow_iterable(), mode="create_append")
+            postgres_service.connection.commit()
 
-        metadata = generate_metadata(arrow_table)
+        # Generate metadata from the schema
+        metadata = generate_metadata(rows.schema)
         end_time = time.time()
 
         return CopyTableResponse(
-            status="Success", time_taken=end_time - start_time, metadata=metadata
+            status="Success", time_taken=end_time - start_time, metadata=metadata, rows_loaded=None
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

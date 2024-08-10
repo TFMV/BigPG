@@ -4,5 +4,6 @@ pydantic
 google-cloud-bigquery-storage
 pyarrow
 adbc-driver-postgresql
+adbc-driver-bigquery
 pyyaml
 pyarrow-bigquery

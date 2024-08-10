@@ -1,0 +1,1 @@
+export ADBC_BIGQUERY_LIBRARY=$(pwd)/build/driver/bigquery/libadbc_driver_bigquery.dylib

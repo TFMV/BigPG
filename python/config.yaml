@@ -1,5 +1,6 @@
 gcp:
   project_id: "tfmv-371720"
+  credentials_file: "/Users/thomasmcgeehan/BigPG/BigPG/python/sa.json"
 
 postgres:
   conn_str: "postgresql://postgres:password@localhost/tfmv"
