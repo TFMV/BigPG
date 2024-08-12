@@ -3,4 +3,4 @@ gcp:
   credentials_file: "/Users/thomasmcgeehan/BigPG/BigPG/python/sa.json"
 
 postgres:
-  conn_str: "postgresql://postgres:password@localhost/tfmv"
+  conn_str: "postgresql://postgres:password@localhost/foo"

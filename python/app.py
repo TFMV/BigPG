@@ -1,14 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any, Union, List
 from google.cloud.bigquery_storage import (
     BigQueryReadClient,
     types,
     ArrowSerializationOptions,
 )
 from google.cloud import bigquery
+from google.cloud.bigquery import SchemaField
 import pyarrow as pa
-import pyarrow.ipc as ipc
 import time
 import adbc_driver_postgresql.dbapi
 import yaml
@@ -25,7 +25,7 @@ class ConfigLoader:
         with open(config_file, "r") as file:
             return yaml.safe_load(file)
 
-    def get(self, section: str, key: str) -> Union[str, None]:
+    def get(self, section: str, key: str) -> Optional[str]:
         return self.config.get(section, {}).get(key)
 
 
@@ -69,10 +69,13 @@ class PostgresService:
     def __init__(self, connection_string: str) -> None:
         self.connection = adbc_driver_postgresql.dbapi.connect(connection_string)
 
-    def ingest_data(self, table_name: str, arrow_table: pa.Table) -> None:
+    def ingest_data(self, table_name: str, arrow_batches) -> int:
+        """Ingests data into PostgreSQL, accepting an iterable of Arrow batches."""
         with self.connection.cursor() as cursor:
-            cursor.adbc_ingest(table_name, arrow_table, mode="create_append")
-            self.connection.commit()
+            r = cursor.adbc_ingest(table_name, arrow_batches, mode="create_append")
+        self.connection.commit()
+        return r
+
 
     def fetch_data(self, table_name: str) -> pa.Table:
         with self.connection.cursor() as cursor:
@@ -80,22 +83,34 @@ class PostgresService:
             return cursor.fetch_arrow_table()
 
 
-def generate_metadata(schema: Union[pa.Schema, list]) -> Dict[str, Any]:
+def generate_metadata(schema: Union[pa.Table, pa.Schema, List[SchemaField]]) -> Dict[str, Any]:
     """Generates metadata from a pyarrow schema or BigQuery schema."""
+    
+    # Debugging information
+    print(f"Schema type: {type(schema)}")
+    
     if isinstance(schema, pa.Schema):
         # If schema is a PyArrow schema
         fields = [
             {"name": field.name, "type": str(field.type), "nullable": field.nullable}
             for field in schema
         ]
-    else:
-        # If schema is a BigQuery schema (list of SchemaField)
+    elif isinstance(schema, pa.Table):
+        # If schema is a PyArrow table
+        fields = [
+            {"name": field.name, "type": str(field.type), "nullable": field.nullable}
+            for field in schema.schema
+        ]
+    elif isinstance(schema, list) and all(isinstance(field, SchemaField) for field in schema):
+        # If schema is a list of BigQuery SchemaField
         fields = [
             {"name": field.name, "type": field.field_type, "nullable": field.is_nullable}
             for field in schema
         ]
+    else:
+        raise ValueError("Unsupported schema type provided.")
+    
     return {"fields": fields}
-
 
 class CopyTableRequest(BaseModel):
     dataset_id: str = Field(..., example="my_dataset")
@@ -141,13 +156,13 @@ async def bq_to_pg(request: CopyTableRequest):
         reader = bigquery_service.client.read_rows(session.streams[0].name)
         rows = reader.rows(session)
         arrow_table = rows.to_arrow()
-        postgres_service.ingest_data(request.table_id, arrow_table)
+        rows_loaded = postgres_service.ingest_data(request.table_id, arrow_table)
 
         metadata = generate_metadata(arrow_table)
         end_time = time.time()
 
         return CopyTableResponse(
-            status="Success", time_taken=end_time - start_time, metadata=metadata
+            status="Success", time_taken=end_time - start_time, metadata=metadata, rows_loaded=rows_loaded
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -174,22 +189,19 @@ async def bq_to_pg_arrow(request: CopyTableRequest):
         query_job = bq_client.query(query)
 
         # Get the result set, and use to_arrow_iterable to stream Arrow record batches
-        rows = query_job.result()
-
+        rows = query_job.result().to_arrow_iterable()
+        # rows does not have a schema. We must get the schema from the query job
+        metadata = generate_metadata(query_job.result().schema)
         # Initialize Postgres service
         postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
 
         # Ingest the streamed data into PostgreSQL
-        with postgres_service.connection.cursor() as cursor:
-            cursor.adbc_ingest(request.table_id, rows.to_arrow_iterable(), mode="create_append")
-            postgres_service.connection.commit()
+        rows_loaded = postgres_service.ingest_data(request.table_id, rows)
 
-        # Generate metadata from the schema
-        metadata = generate_metadata(rows.schema)
         end_time = time.time()
 
         return CopyTableResponse(
-            status="Success", time_taken=end_time - start_time, metadata=metadata, rows_loaded=None
+            status="Success", time_taken=end_time - start_time, metadata=metadata, rows_loaded=rows_loaded
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
