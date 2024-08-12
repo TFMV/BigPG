@@ -1,17 +1,15 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, Union, List
-from google.cloud.bigquery_storage import (
-    BigQueryReadClient,
-    types,
-    ArrowSerializationOptions,
-)
-from google.cloud import bigquery
-import pyarrow as pa
 import time
+from typing import Any, Dict, Optional
+
 import adbc_driver_postgresql.dbapi
-import yaml
+import pyarrow as pa
 import uvicorn
+import yaml
+from fastapi import FastAPI, HTTPException
+from google.cloud import bigquery
+from google.cloud.bigquery_storage import (ArrowSerializationOptions,
+                                           BigQueryReadClient, types)
+from pydantic import BaseModel, Field
 
 
 # ConfigLoader Class
@@ -145,26 +143,26 @@ async def bq_to_pg_batch(request: CopyTableRequest):
     start_time = time.time()
 
     try:
+        # Initialize BigQuery service
         bigquery_service = BigQueryService(config_loader.get("gcp", "project_id"))
+        bq_storage_client = bigquery_service.client
+
+        # Initialize the BigQuery client
+        bq_client = bigquery.Client()
+
+        # Use BigQuery Storage API to stream data
+        table_ref = f"{request.dataset_id}.{request.table_id}"
+        rows_iterator = bq_client.list_rows(
+            table_ref,
+            max_results=None
+        ).to_arrow_iterable(bqstorage_client=bq_storage_client)
+
+        # Initialize Postgres service
         postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
-
-        # Construct the query
-        query = f"SELECT * FROM `{bigquery_service.project_id}.{request.dataset_id}.{request.table_id}`"
-        if request.predicates:
-            predicate_string = " AND ".join(
-                [f"{k} = '{v}'" for k, v in request.predicates.items()]
-            )
-            query += f" WHERE {predicate_string}"
-
-        # Run the query
-        query_job = bigquery.Client().query(query)
-
-        # Read rows using BigQuery Storage API and stream them to PostgreSQL
-        rows_iterator = query_job.result().to_arrow_iterable(
-            bqstorage_client=bigquery_service.client
-        )
-
+        
+        # Ingest streamed data into PostgreSQL
         rows_loaded = postgres_service.ingest_data(request.table_id, rows_iterator)
+
         time_taken = time.time() - start_time
 
         return CopyTableResponse(
