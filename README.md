@@ -63,3 +63,74 @@ postgres:
 - `time_taken`: How long it took to complete the operation.
 - `metadata`: All the juicy details about your data structure.
 - `rows_loaded`: The number of rows that made it to PostgreSQL.
+
+### Real Request and Response (local machine over public internet)
+
+Request:
+
+```json
+{
+  "dataset_id": "tpch",
+  "table_id": "orders",
+  "max_stream_count": 1
+}
+```
+
+Response:
+
+```json
+{
+  "status": "Success",
+  "time_taken": 56.349376916885376,
+  "metadata": {
+    "fields": [
+      {
+        "name": "o_orderkey",
+        "type": "int64",
+        "nullable": true
+      },
+      {
+        "name": "o_custkey",
+        "type": "int64",
+        "nullable": true
+      },
+      {
+        "name": "o_orderstatus",
+        "type": "string",
+        "nullable": true
+      },
+      {
+        "name": "o_totalprice",
+        "type": "double",
+        "nullable": true
+      },
+      {
+        "name": "o_orderdate",
+        "type": "date32[day]",
+        "nullable": true
+      },
+      {
+        "name": "o_orderpriority",
+        "type": "string",
+        "nullable": true
+      },
+      {
+        "name": "o_clerk",
+        "type": "string",
+        "nullable": true
+      },
+      {
+        "name": "o_shippriority",
+        "type": "int64",
+        "nullable": true
+      },
+      {
+        "name": "o_comment",
+        "type": "string",
+        "nullable": true
+      }
+    ]
+  },
+  "rows_loaded": 15000000
+}
+```
