@@ -14,6 +14,8 @@ import adbc_driver_postgresql.dbapi
 import yaml
 import uvicorn
 
+
+# ConfigLoader Class
 class ConfigLoader:
     """Handles loading and accessing the configuration from a YAML file."""
 
@@ -29,6 +31,7 @@ class ConfigLoader:
         return self.config.get(section, {}).get(key)
 
 
+# BigQueryService Class
 class BigQueryService:
     """Encapsulates BigQuery operations."""
 
@@ -55,14 +58,14 @@ class BigQueryService:
         if row_restriction:
             requested_session.read_options.row_restriction = row_restriction
 
-        parent = f"projects/{self.project_id}"
         return self.client.create_read_session(
-            parent=parent,
+            parent=f"projects/{self.project_id}",
             read_session=requested_session,
             max_stream_count=max_stream_count,
         )
 
 
+# PostgresService Class
 class PostgresService:
     """Encapsulates PostgreSQL operations."""
 
@@ -72,10 +75,11 @@ class PostgresService:
     def ingest_data(self, table_name: str, arrow_batches) -> int:
         """Ingests data into PostgreSQL, accepting an iterable of Arrow batches."""
         with self.connection.cursor() as cursor:
-            r = cursor.adbc_ingest(table_name, arrow_batches, mode="create_append")
+            rows_inserted = cursor.adbc_ingest(
+                table_name, arrow_batches, mode="create_append"
+            )
         self.connection.commit()
-        return r
-
+        return rows_inserted
 
     def fetch_data(self, table_name: str) -> pa.Table:
         with self.connection.cursor() as cursor:
@@ -83,35 +87,36 @@ class PostgresService:
             return cursor.fetch_arrow_table()
 
 
-def generate_metadata(schema: Union[pa.Table, pa.Schema, List[SchemaField]]) -> Dict[str, Any]:
+# Helper function to generate metadata
+def generate_metadata(
+    schema: Union[pa.Table, pa.Schema, List[SchemaField]]
+) -> Dict[str, Any]:
     """Generates metadata from a pyarrow schema or BigQuery schema."""
-    
-    # Debugging information
-    print(f"Schema type: {type(schema)}")
-    
+    if isinstance(schema, pa.Table):
+        schema = schema.schema
     if isinstance(schema, pa.Schema):
-        # If schema is a PyArrow schema
         fields = [
             {"name": field.name, "type": str(field.type), "nullable": field.nullable}
             for field in schema
         ]
-    elif isinstance(schema, pa.Table):
-        # If schema is a PyArrow table
+    elif isinstance(schema, list) and all(
+        isinstance(field, SchemaField) for field in schema
+    ):
         fields = [
-            {"name": field.name, "type": str(field.type), "nullable": field.nullable}
-            for field in schema.schema
-        ]
-    elif isinstance(schema, list) and all(isinstance(field, SchemaField) for field in schema):
-        # If schema is a list of BigQuery SchemaField
-        fields = [
-            {"name": field.name, "type": field.field_type, "nullable": field.is_nullable}
+            {
+                "name": field.name,
+                "type": field.field_type,
+                "nullable": field.is_nullable,
+            }
             for field in schema
         ]
     else:
         raise ValueError("Unsupported schema type provided.")
-    
+
     return {"fields": fields}
 
+
+# Request and Response Models
 class CopyTableRequest(BaseModel):
     dataset_id: str = Field(..., example="my_dataset")
     table_id: str = Field(..., example="my_table")
@@ -125,10 +130,8 @@ class CopyTableResponse(BaseModel):
     metadata: Dict[str, Any]
     rows_loaded: Optional[int] = None
 
-    class Config:
-        arbitrary_types_allowed = True
 
-
+# FastAPI Initialization
 app = FastAPI()
 config_loader = ConfigLoader()
 
@@ -154,57 +157,58 @@ async def bq_to_pg(request: CopyTableRequest):
         )
 
         reader = bigquery_service.client.read_rows(session.streams[0].name)
-        rows = reader.rows(session)
-        arrow_table = rows.to_arrow()
-        rows_loaded = postgres_service.ingest_data(request.table_id, arrow_table)
+        rows = reader.rows(session).to_arrow()
+        rows_loaded = postgres_service.ingest_data(request.table_id, rows)
 
-        metadata = generate_metadata(arrow_table)
-        end_time = time.time()
+        metadata = generate_metadata(rows.schema)
+        time_taken = time.time() - start_time
 
         return CopyTableResponse(
-            status="Success", time_taken=end_time - start_time, metadata=metadata, rows_loaded=rows_loaded
+            status="Success",
+            time_taken=time_taken,
+            metadata=metadata,
+            rows_loaded=rows_loaded,
         )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/bq2pg_arrow/", response_model=CopyTableResponse)
 async def bq_to_pg_arrow(request: CopyTableRequest):
     start_time = time.time()
 
     try:
-        # Initialize BigQuery client
         bq_client = bigquery.Client()
 
-        # Run a query
-        query = f"""
-            SELECT *
-            FROM `{request.dataset_id}.{request.table_id}`
-        """
-        
-        # Add predicates if they exist
+        query = f"SELECT * FROM `{request.dataset_id}.{request.table_id}`"
         if request.predicates:
-            predicate_string = " AND ".join([f"{k} = '{v}'" for k, v in request.predicates.items()])
+            predicate_string = " AND ".join(
+                [f"{k} = '{v}'" for k, v in request.predicates.items()]
+            )
             query += f" WHERE {predicate_string}"
-        
+
         query_job = bq_client.query(query)
 
-        # Get the result set, and use to_arrow_iterable to stream Arrow record batches
         rows = query_job.result().to_arrow_iterable()
-        # rows does not have a schema. We must get the schema from the query job
         metadata = generate_metadata(query_job.result().schema)
-        # Initialize Postgres service
-        postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
 
-        # Ingest the streamed data into PostgreSQL
+        postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
         rows_loaded = postgres_service.ingest_data(request.table_id, rows)
 
-        end_time = time.time()
+        time_taken = time.time() - start_time
 
         return CopyTableResponse(
-            status="Success", time_taken=end_time - start_time, metadata=metadata, rows_loaded=rows_loaded
+            status="Success",
+            time_taken=time_taken,
+            metadata=metadata,
+            rows_loaded=rows_loaded,
         )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Uvicorn Runner
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
