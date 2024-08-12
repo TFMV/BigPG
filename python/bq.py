@@ -1,6 +1,6 @@
+import pyarrow as pa
 from google.cloud import bigquery_storage
 from google.cloud.bigquery_storage import BigQueryWriteClient, types
-import pyarrow as pa
 
 
 def append_rows_pending(project_id: str, dataset_id: str, table_id: str):

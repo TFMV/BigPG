@@ -1,17 +1,15 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, Union, List
-from google.cloud.bigquery_storage import (
-    BigQueryReadClient,
-    types,
-    ArrowSerializationOptions,
-)
-from google.cloud import bigquery
-import pyarrow as pa
 import time
+from typing import Any, Dict, Optional
+
 import adbc_driver_postgresql.dbapi
-import yaml
+import pyarrow as pa
 import uvicorn
+import yaml
+from fastapi import FastAPI, HTTPException
+from google.cloud import bigquery
+from google.cloud.bigquery_storage import (ArrowSerializationOptions,
+                                           BigQueryReadClient, types)
+from pydantic import BaseModel, Field
 
 
 # ConfigLoader Class
