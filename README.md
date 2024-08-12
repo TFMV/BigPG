@@ -44,7 +44,7 @@ postgres:
 - `metadata`: All the juicy details about your data structure.
 - `rows_loaded`: The number of rows that made it to PostgreSQL.
 
-### 🚀 `/bq2pg_arrow/`
+### 🚀 `/bq2pg_batch/`
 
 **Method:** `POST`
 
