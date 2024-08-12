@@ -7,7 +7,6 @@ from google.cloud.bigquery_storage import (
     ArrowSerializationOptions,
 )
 from google.cloud import bigquery
-from google.cloud.bigquery import SchemaField
 import pyarrow as pa
 import time
 import adbc_driver_postgresql.dbapi
@@ -87,35 +86,6 @@ class PostgresService:
             return cursor.fetch_arrow_table()
 
 
-# Helper function to generate metadata
-def generate_metadata(
-    schema: Union[pa.Table, pa.Schema, List[SchemaField]]
-) -> Dict[str, Any]:
-    """Generates metadata from a pyarrow schema or BigQuery schema."""
-    if isinstance(schema, pa.Table):
-        schema = schema.schema
-    if isinstance(schema, pa.Schema):
-        fields = [
-            {"name": field.name, "type": str(field.type), "nullable": field.nullable}
-            for field in schema
-        ]
-    elif isinstance(schema, list) and all(
-        isinstance(field, SchemaField) for field in schema
-    ):
-        fields = [
-            {
-                "name": field.name,
-                "type": field.field_type,
-                "nullable": field.is_nullable,
-            }
-            for field in schema
-        ]
-    else:
-        raise ValueError("Unsupported schema type provided.")
-
-    return {"fields": fields}
-
-
 # Request and Response Models
 class CopyTableRequest(BaseModel):
     dataset_id: str = Field(..., example="my_dataset")
@@ -127,7 +97,6 @@ class CopyTableRequest(BaseModel):
 class CopyTableResponse(BaseModel):
     status: str
     time_taken: float
-    metadata: Dict[str, Any]
     rows_loaded: Optional[int] = None
 
 
@@ -159,14 +128,11 @@ async def bq_to_pg(request: CopyTableRequest):
         reader = bigquery_service.client.read_rows(session.streams[0].name)
         rows = reader.rows(session).to_arrow()
         rows_loaded = postgres_service.ingest_data(request.table_id, rows)
-
-        metadata = generate_metadata(rows.schema)
         time_taken = time.time() - start_time
 
         return CopyTableResponse(
             status="Success",
             time_taken=time_taken,
-            metadata=metadata,
             rows_loaded=rows_loaded,
         )
 
@@ -174,34 +140,36 @@ async def bq_to_pg(request: CopyTableRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/bq2pg_arrow/", response_model=CopyTableResponse)
-async def bq_to_pg_arrow(request: CopyTableRequest):
+@app.post("/bq2pg_batch/", response_model=CopyTableResponse)
+async def bq_to_pg_batch(request: CopyTableRequest):
     start_time = time.time()
 
     try:
-        bq_client = bigquery.Client()
+        bigquery_service = BigQueryService(config_loader.get("gcp", "project_id"))
+        postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
 
-        query = f"SELECT * FROM `{request.dataset_id}.{request.table_id}`"
+        # Construct the query
+        query = f"SELECT * FROM `{bigquery_service.project_id}.{request.dataset_id}.{request.table_id}`"
         if request.predicates:
             predicate_string = " AND ".join(
                 [f"{k} = '{v}'" for k, v in request.predicates.items()]
             )
             query += f" WHERE {predicate_string}"
 
-        query_job = bq_client.query(query)
+        # Run the query
+        query_job = bigquery.Client().query(query)
 
-        rows = query_job.result().to_arrow_iterable()
-        metadata = generate_metadata(query_job.result().schema)
+        # Read rows using BigQuery Storage API and stream them to PostgreSQL
+        rows_iterator = query_job.result().to_arrow_iterable(
+            bqstorage_client=bigquery_service.client
+        )
 
-        postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
-        rows_loaded = postgres_service.ingest_data(request.table_id, rows)
-
+        rows_loaded = postgres_service.ingest_data(request.table_id, rows_iterator)
         time_taken = time.time() - start_time
 
         return CopyTableResponse(
             status="Success",
             time_taken=time_taken,
-            metadata=metadata,
             rows_loaded=rows_loaded,
         )
 
