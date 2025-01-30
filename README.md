@@ -1,6 +1,6 @@
 # BigPG
 
-BigPG is a high-performance FastAPI application designed to transfer data between Google BigQuery and PostgreSQL. Leveraging Apache Arrow and Google's BigQuery Storage Write API, it enables fast, memory-efficient, and schema-aware data movement.
+BigPG is a high-performance FastAPI-based data replication solution that enables bidirectional data movement between PostgreSQL and Google BigQuery. Powered by Apache Arrow, ADBC, and the BigQuery Storage API, BigPG streams large datasets with minimal overhead.
 
 ## ⚙️ Configuration
 
@@ -14,3 +14,12 @@ gcp:
 postgres:
   conn_str: "postgresql://postgres:password@localhost/databasename"
 ```
+
+## Notes
+
+- You will need to build the ADBC driver from source on the target machine.
+- The current implementation is a proof of concept and may require further optimization for production use.
+- The code is provided as-is, without any guarantees of stability or performance.
+
+The pbarrow implementation could be of use for other projects but it is not yet ready for production use as it has not been well tested.
+
