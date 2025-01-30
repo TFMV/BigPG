@@ -1,85 +1,137 @@
+import time
+import logging
 import pyarrow as pa
-from google.cloud import bigquery_storage
-from google.cloud.bigquery_storage import BigQueryWriteClient, types
+from google.cloud import bigquery
+from google.protobuf import descriptor_pb2
+from pbarrow import arrow_schema_to_proto, arrow_batch_to_proto
+from google.cloud.bigquery_storage_v1 import (
+    types,
+    writer,
+    BigQueryReadClient,
+    BigQueryWriteClient,
+)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-def append_rows_pending(project_id: str, dataset_id: str, table_id: str):
-    """Create a write stream, write some sample data, and commit the stream."""
-    write_client = BigQueryWriteClient()
-    parent = write_client.table_path(project_id, dataset_id, table_id)
-    write_stream = types.WriteStream()
+class BigQueryService:
+    """Encapsulates BigQuery read/write operations using the Storage API."""
 
-    # When creating the stream, choose the type. Use the PENDING type to wait
-    # until the stream is committed before it is visible.
-    write_stream.type_ = types.WriteStream.Type.PENDING
-    write_stream = write_client.create_write_stream(
-        parent=parent, write_stream=write_stream
-    )
-    stream_name = write_stream.name
+    def __init__(self, project_id: str):
+        self.project_id = project_id
+        self.read_client = BigQueryReadClient()
+        self.write_client = BigQueryWriteClient()
+        self.client = bigquery.Client(project=project_id)
+        self.bqstorage_client = BigQueryReadClient()
 
-    # Define the Arrow schema
-    arrow_schema = pa.schema(
-        [
-            ("customer_name", pa.string()),
-            ("row_num", pa.int64()),
-        ]
-    )
+    def read_table(self, dataset_id: str, table_id: str, max_stream_count: int = 1):
+        """Reads a table from BigQuery using the Storage API."""
+        table = f"projects/{self.project_id}/datasets/{dataset_id}/tables/{table_id}"
 
-    # Define Arrow record batch
-    arrow_table = pa.table(
-        [
-            ["Alice", "Bob", "Charles"],  # customer_name
-            [1, 2, 3],  # row_num
-        ],
-        schema=arrow_schema,
-    )
+        requested_session = types.ReadSession(
+            table=table, data_format=types.DataFormat.ARROW
+        )
+        requested_session.read_options.arrow_serialization_options.buffer_compression = (
+            types.ArrowSerializationOptions.CompressionCodec.LZ4_FRAME
+        )
 
-    # Convert Arrow table to ArrowRecordBatch
-    arrow_batches = arrow_table.to_batches()
+        session = self.read_client.create_read_session(
+            parent=f"projects/{self.project_id}",
+            read_session=requested_session,
+            max_stream_count=max_stream_count,
+        )
 
-    # Initialize the first request with the stream name and Arrow schema
-    request_template = types.AppendRowsRequest()
-    request_template.write_stream = stream_name
-    proto_data = types.AppendRowsRequest.ProtoData()
+        stream = session.streams[0].name
+        reader = self.read_client.read_rows(stream)
+        return reader.rows(session).to_arrow()
 
-    # Assign the Arrow schema to the request
-    proto_data.writer_schema = types.ProtoSchema(
-        arrow_schema=types.ArrowSchema(arrow_schema=arrow_schema.serialize())
-    )
-    request_template.proto_rows = proto_data
+    def write_to_bigquery(self, dataset_id: str, table_id: str, arrow_table: pa.Table):
+        """Converts Arrow table to Proto and writes to BigQuery using the Storage API."""
+        try:
+            parent = self.write_client.table_path(self.project_id, dataset_id, table_id)
+            write_stream = self.write_client.create_write_stream(
+                parent=parent,
+                write_stream=types.WriteStream(),
+                write_stream_id=f"{parent}/_default"
+            )
+            stream_name = write_stream.name
 
-    # Some stream types support an unbounded number of requests.
-    # Construct an AppendRowsStream to send an arbitrary number of requests to a stream.
-    append_rows_stream = bigquery_storage.writer.AppendRowsStream(
-        write_client, request_template
-    )
+            proto_schema = arrow_schema_to_proto(arrow_table.schema)
+            proto_messages = arrow_batch_to_proto(arrow_table, proto_schema)
 
-    # Create the first batch of row data by appending the serialized Arrow record batch
-    request = types.AppendRowsRequest()
-    request.offset = 0
-    proto_data = types.AppendRowsRequest.ProtoData()
-    proto_data.rows = types.ProtoRows(serialized_rows=[arrow_batches[0].to_bytes()])
-    request.proto_rows = proto_data
+            # Prepare request template
+            request_template = types.AppendRowsRequest()
+            request_template.write_stream = stream_name
+            proto_data = types.AppendRowsRequest.ProtoData()
+            proto_data.writer_schema = types.ProtoSchema(proto_descriptor=proto_schema)
+            request_template.proto_rows = proto_data
 
-    response_future_1 = append_rows_stream.send(request)
+            # Create append stream
+            append_rows_stream = writer.AppendRowsStream(self.write_client, request_template)
 
-    print(response_future_1.result())
+            # Send the rows
+            request = types.AppendRowsRequest(
+                proto_rows=types.AppendRowsRequest.ProtoData(
+                    rows=types.ProtoRows(serialized_rows=proto_messages)
+                )
+            )
+            append_rows_stream.send(request)
 
-    # Shutdown background threads and close the streaming connection.
-    append_rows_stream.close()
+            # Finalize the stream
+            append_rows_stream.close()
+            self.write_client.finalize_write_stream(name=stream_name)
 
-    # A PENDING type stream must be "finalized" before being committed. No new
-    # records can be written to the stream after this method has been called.
-    write_client.finalize_write_stream(name=write_stream.name)
+            # Commit the stream
+            batch_commit_response = self.write_client.batch_commit_write_streams(
+                parent=parent,
+                write_streams=[stream_name]
+            )
 
-    # Commit the stream you created earlier.
-    batch_commit_write_streams_request = types.BatchCommitWriteStreamsRequest()
-    batch_commit_write_streams_request.parent = parent
-    batch_commit_write_streams_request.write_streams = [write_stream.name]
-    write_client.batch_commit_write_streams(batch_commit_write_streams_request)
+            logger.info(
+                f"Successfully written {len(proto_messages)} rows to BigQuery table {table_id}"
+            )
+            return batch_commit_response
 
-    print(f"Writes to stream: '{write_stream.name}' have been committed.")
+        except Exception as e:
+            logger.error(f"Error writing to BigQuery: {str(e)}")
+            raise
 
+    async def execute_query(self, query):
+        """Execute a BigQuery query and return results as Arrow RecordBatch."""
+        try:
+            # Create BigQuery job
+            job = self.client.query(query)
 
-if __name__ == "__main__":
-    append_rows_pending("tfmv-371720", "tfmv", "customer_test")
+            # Get the destination table
+            destination = job.destination
+
+            # Create read session
+            read_session = types.ReadSession()
+            read_session.table = f"projects/{self.project_id}/datasets/{destination.dataset_id}/tables/{destination.table_id}"
+            read_session.data_format = types.DataFormat.ARROW
+
+            session = self.bqstorage_client.create_read_session(
+                parent=f"projects/{self.project_id}",
+                read_session=read_session,
+                max_stream_count=1,
+            )
+
+            # Read from the stream
+            stream = session.streams[0]
+            reader = self.bqstorage_client.read_rows(stream.name)
+
+            # Convert to Arrow RecordBatch
+            arrow_batches = []
+            for batch in reader.rows().pages:
+                arrow_batches.append(batch.to_arrow())
+
+            if not arrow_batches:
+                raise ValueError("No data returned from query")
+
+            return arrow_batches[0]  # Return first batch for now
+
+        except Exception as e:
+            logger.error(f"Error executing BigQuery query: {str(e)}")
+            raise
