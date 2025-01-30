@@ -23,7 +23,7 @@ for logger_name in [
     "google.api_core.grpc_helpers",
     "google.api_core.retry",
     "google.cloud.bigquery_storage_v1.writer",
-    "bq",  # your module
+    "bq",
     "__main__",
 ]:
     logging.getLogger(logger_name).setLevel(logging.DEBUG)
@@ -107,7 +107,7 @@ class BigQueryService:
             )
             try:
                 response_future = append_rows_stream.send(request)
-                response = response_future.result()  # ✅ Wait for response
+                response = response_future.result()  # Wait for response
                 logger.debug(f"Successfully sent rows, response: {response}")
             except Exception as e:
                 logger.error(f"Error sending rows: {str(e)}", exc_info=True)

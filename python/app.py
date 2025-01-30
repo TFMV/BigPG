@@ -5,8 +5,8 @@ import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
-from bq import BigQueryService
-from pg import PostgresService
+from bigquery import BigQueryService
+from postgres import PostgresService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
