@@ -159,7 +159,7 @@ async def bq_to_pg_batch(request: CopyTableRequest):
 
         # Initialize Postgres service
         postgres_service = PostgresService(config_loader.get("postgres", "conn_str"))
-        
+
         # Ingest streamed data into PostgreSQL
         rows_loaded = postgres_service.ingest_data(request.table_id, rows_iterator)
 
