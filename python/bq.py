@@ -11,8 +11,23 @@ from google.cloud.bigquery_storage_v1 import (
     BigQueryWriteClient,
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure detailed logging for all relevant modules
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
+# Enable debug logging for specific modules
+for logger_name in [
+    "google.cloud.bigquery_storage_v1",
+    "google.api_core.bidi",
+    "google.api_core.grpc_helpers",
+    "google.api_core.retry",
+    "google.cloud.bigquery_storage_v1.writer",
+    "bq",  # your module
+    "__main__",
+]:
+    logging.getLogger(logger_name).setLevel(logging.DEBUG)
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,18 +65,27 @@ class BigQueryService:
     def write_to_bigquery(self, dataset_id: str, table_id: str, arrow_table: pa.Table):
         """Converts Arrow table to Proto and writes to BigQuery using the Storage API."""
         try:
+            logger.debug(f"Starting write operation to {dataset_id}.{table_id}")
             parent = self.write_client.table_path(self.project_id, dataset_id, table_id)
+            logger.debug(f"Parent path: {parent}")
+
+            # Specify stream type explicitly
+            logger.debug("Creating write stream")
             write_stream = self.write_client.create_write_stream(
                 parent=parent,
-                write_stream=types.WriteStream(),
-                write_stream_id=f"{parent}/_default"
+                write_stream=types.WriteStream(type_=types.WriteStream.Type.COMMITTED),
             )
             stream_name = write_stream.name
+            logger.debug(f"Created write stream: {stream_name}")
 
+            logger.debug("Converting Arrow schema to Proto schema")
             proto_schema = arrow_schema_to_proto(arrow_table.schema)
+            logger.debug("Converting Arrow data to Proto messages")
             proto_messages = arrow_batch_to_proto(arrow_table, proto_schema)
+            logger.debug(f"Converted {len(proto_messages)} messages")
 
             # Prepare request template
+            logger.debug("Preparing request template")
             request_template = types.AppendRowsRequest()
             request_template.write_stream = stream_name
             proto_data = types.AppendRowsRequest.ProtoData()
@@ -69,25 +93,51 @@ class BigQueryService:
             request_template.proto_rows = proto_data
 
             # Create append stream
-            append_rows_stream = writer.AppendRowsStream(self.write_client, request_template)
+            logger.debug("Creating append stream")
+            append_rows_stream = writer.AppendRowsStream(
+                self.write_client, request_template
+            )
 
-            # Send the rows
+            # Send the rows (Fix: Wait for response)
+            logger.debug("Sending rows")
             request = types.AppendRowsRequest(
                 proto_rows=types.AppendRowsRequest.ProtoData(
                     rows=types.ProtoRows(serialized_rows=proto_messages)
                 )
             )
-            append_rows_stream.send(request)
+            try:
+                response_future = append_rows_stream.send(request)
+                response = response_future.result()  # ✅ Wait for response
+                logger.debug(f"Successfully sent rows, response: {response}")
+            except Exception as e:
+                logger.error(f"Error sending rows: {str(e)}", exc_info=True)
+                raise
 
-            # Finalize the stream
-            append_rows_stream.close()
-            self.write_client.finalize_write_stream(name=stream_name)
+            # Finalize the stream (Fix: Ensure proper closure)
+            logger.debug("Finalizing stream")
+            try:
+                append_rows_stream.close()
+                self.write_client.finalize_write_stream(name=stream_name)
+                logger.debug("Stream finalized successfully")
+            except Exception as e:
+                logger.error(f"Error finalizing stream: {str(e)}", exc_info=True)
+                raise
 
-            # Commit the stream
-            batch_commit_response = self.write_client.batch_commit_write_streams(
-                parent=parent,
-                write_streams=[stream_name]
-            )
+            # Commit the stream (Fix: Ensure batch commit response is handled)
+            logger.debug("Committing stream")
+            try:
+                batch_commit_request = types.BatchCommitWriteStreamsRequest(
+                    parent=parent, write_streams=[stream_name]
+                )
+                batch_commit_response = self.write_client.batch_commit_write_streams(
+                    batch_commit_request
+                )
+                logger.debug(
+                    f"Stream committed successfully, response: {batch_commit_response}"
+                )
+            except Exception as e:
+                logger.error(f"Error committing stream: {str(e)}", exc_info=True)
+                raise
 
             logger.info(
                 f"Successfully written {len(proto_messages)} rows to BigQuery table {table_id}"
@@ -95,7 +145,7 @@ class BigQueryService:
             return batch_commit_response
 
         except Exception as e:
-            logger.error(f"Error writing to BigQuery: {str(e)}")
+            logger.error(f"Error writing to BigQuery: {str(e)}", exc_info=True)
             raise
 
     async def execute_query(self, query):
