@@ -1,6 +1,6 @@
 # BigPG
 
-BigPG is a high-performance FastAPI application designed to seamlessly transfer data between Google BigQuery and PostgreSQL. Leveraging Apache Arrow and Google's BigQuery Storage Write API, it enables fast, memory-efficient, and schema-aware data migration.
+BigPG is a high-performance FastAPI application designed to transfer data between Google BigQuery and PostgreSQL. Leveraging Apache Arrow and Google's BigQuery Storage Write API, it enables fast, memory-efficient, and schema-aware data movement.
 
 ## ⚙️ Configuration
 
