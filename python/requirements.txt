@@ -2,6 +2,7 @@ fastapi
 uvicorn
 pydantic
 google-cloud-bigquery-storage
+google-cloud-bigquery
 pyarrow
 adbc-driver-postgresql
 adbc-driver-bigquery
@@ -9,3 +10,4 @@ pyyaml
 pyarrow-bigquery
 importlib
 markdown2
+adbc-driver-manager
