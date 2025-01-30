@@ -11,6 +11,10 @@ from google.cloud.bigquery_storage_v1 import (
     BigQueryWriteClient,
 )
 
+import sys
+
+MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB BigQuery limit
+
 # Configure detailed logging for all relevant modules
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -94,58 +98,63 @@ class BigQueryService:
 
             # Create append stream
             logger.debug("Creating append stream")
-            append_rows_stream = writer.AppendRowsStream(
-                self.write_client, request_template
-            )
+            append_rows_stream = writer.AppendRowsStream(self.write_client, request_template)
 
-            # Send the rows (Fix: Wait for response)
-            logger.debug("Sending rows")
-            request = types.AppendRowsRequest(
-                proto_rows=types.AppendRowsRequest.ProtoData(
-                    rows=types.ProtoRows(serialized_rows=proto_messages)
-                )
-            )
-            try:
-                response_future = append_rows_stream.send(request)
-                response = response_future.result()  # Wait for response
-                logger.debug(f"Successfully sent rows, response: {response}")
-            except Exception as e:
-                logger.error(f"Error sending rows: {str(e)}", exc_info=True)
-                raise
+            batch = []
+            batch_size = 0
 
-            # Finalize the stream (Fix: Ensure proper closure)
+            for row in proto_messages:
+                row_size = sys.getsizeof(row)
+
+                # If adding this row exceeds the limit, send the batch and start a new one
+                if batch_size + row_size > MAX_MESSAGE_SIZE:
+                    logger.debug(f"Sending batch of {len(batch)} rows (size: {batch_size} bytes)")
+                    self._send_batch(append_rows_stream, batch)
+                    batch = []
+                    batch_size = 0
+
+                batch.append(row)
+                batch_size += row_size
+
+            # Send any remaining rows
+            if batch:
+                logger.debug(f"Sending final batch of {len(batch)} rows (size: {batch_size} bytes)")
+                self._send_batch(append_rows_stream, batch)
+
+            # Finalize the stream
             logger.debug("Finalizing stream")
-            try:
-                append_rows_stream.close()
-                self.write_client.finalize_write_stream(name=stream_name)
-                logger.debug("Stream finalized successfully")
-            except Exception as e:
-                logger.error(f"Error finalizing stream: {str(e)}", exc_info=True)
-                raise
+            append_rows_stream.close()
+            self.write_client.finalize_write_stream(name=stream_name)
+            logger.debug("Stream finalized successfully")
 
-            # Commit the stream (Fix: Ensure batch commit response is handled)
+            # Commit the stream
             logger.debug("Committing stream")
-            try:
-                batch_commit_request = types.BatchCommitWriteStreamsRequest(
-                    parent=parent, write_streams=[stream_name]
-                )
-                batch_commit_response = self.write_client.batch_commit_write_streams(
-                    batch_commit_request
-                )
-                logger.debug(
-                    f"Stream committed successfully, response: {batch_commit_response}"
-                )
-            except Exception as e:
-                logger.error(f"Error committing stream: {str(e)}", exc_info=True)
-                raise
-
-            logger.info(
-                f"Successfully written {len(proto_messages)} rows to BigQuery table {table_id}"
+            batch_commit_request = types.BatchCommitWriteStreamsRequest(
+                parent=parent, write_streams=[stream_name]
             )
+            batch_commit_response = self.write_client.batch_commit_write_streams(batch_commit_request)
+            logger.debug(f"Stream committed successfully, response: {batch_commit_response}")
+
+            logger.info(f"Successfully written {len(proto_messages)} rows to BigQuery table {table_id}")
             return batch_commit_response
 
         except Exception as e:
             logger.error(f"Error writing to BigQuery: {str(e)}", exc_info=True)
+            raise
+
+    def _send_batch(self, append_rows_stream, batch):
+        """Helper function to send a batch of rows."""
+        request = types.AppendRowsRequest(
+            proto_rows=types.AppendRowsRequest.ProtoData(
+                rows=types.ProtoRows(serialized_rows=batch)
+            )
+        )
+        try:
+            response_future = append_rows_stream.send(request)
+            response = response_future.result()  # Wait for response
+            logger.debug(f"Successfully sent batch, response: {response}")
+        except Exception as e:
+            logger.error(f"Error sending batch: {str(e)}", exc_info=True)
             raise
 
     async def execute_query(self, query):
