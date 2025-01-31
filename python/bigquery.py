@@ -1,3 +1,32 @@
+# --------------------------------------------------------------------------------
+# Author: Thomas F McGeehan V
+#
+# This file is part of a software project developed by Thomas F McGeehan V.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+# For more information about the MIT License, please visit:
+# https://opensource.org/licenses/MIT
+#
+# Acknowledgment appreciated but not required.
+# --------------------------------------------------------------------------------
+
 import time
 import logging
 import pyarrow as pa
@@ -98,7 +127,9 @@ class BigQueryService:
 
             # Create append stream
             logger.debug("Creating append stream")
-            append_rows_stream = writer.AppendRowsStream(self.write_client, request_template)
+            append_rows_stream = writer.AppendRowsStream(
+                self.write_client, request_template
+            )
 
             batch = []
             batch_size = 0
@@ -108,7 +139,9 @@ class BigQueryService:
 
                 # If adding this row exceeds the limit, send the batch and start a new one
                 if batch_size + row_size > MAX_MESSAGE_SIZE:
-                    logger.debug(f"Sending batch of {len(batch)} rows (size: {batch_size} bytes)")
+                    logger.debug(
+                        f"Sending batch of {len(batch)} rows (size: {batch_size} bytes)"
+                    )
                     self._send_batch(append_rows_stream, batch)
                     batch = []
                     batch_size = 0
@@ -118,7 +151,9 @@ class BigQueryService:
 
             # Send any remaining rows
             if batch:
-                logger.debug(f"Sending final batch of {len(batch)} rows (size: {batch_size} bytes)")
+                logger.debug(
+                    f"Sending final batch of {len(batch)} rows (size: {batch_size} bytes)"
+                )
                 self._send_batch(append_rows_stream, batch)
 
             # Finalize the stream
@@ -132,10 +167,16 @@ class BigQueryService:
             batch_commit_request = types.BatchCommitWriteStreamsRequest(
                 parent=parent, write_streams=[stream_name]
             )
-            batch_commit_response = self.write_client.batch_commit_write_streams(batch_commit_request)
-            logger.debug(f"Stream committed successfully, response: {batch_commit_response}")
+            batch_commit_response = self.write_client.batch_commit_write_streams(
+                batch_commit_request
+            )
+            logger.debug(
+                f"Stream committed successfully, response: {batch_commit_response}"
+            )
 
-            logger.info(f"Successfully written {len(proto_messages)} rows to BigQuery table {table_id}")
+            logger.info(
+                f"Successfully written {len(proto_messages)} rows to BigQuery table {table_id}"
+            )
             return batch_commit_response
 
         except Exception as e:

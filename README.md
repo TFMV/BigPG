@@ -17,9 +17,7 @@ postgres:
 
 ## Notes
 
-- You will need to build the ADBC driver from source on the target machine.
 - The current implementation is a proof of concept and may require further optimization for production use.
 - The code is provided as-is, without any guarantees of stability or performance.
 
 The pbarrow implementation could be of use for other projects but it is not yet ready for production use as it has not been well tested.
-
